@@ -110,6 +110,7 @@ class GL:
                 if 0 <= pixel_x < GL.width and 0 <= y < GL.height:
                     gpu.GPU.draw_pixel([pixel_x, y], gpu.GPU.RGB8, cor)
                 x += s
+                
 
     @staticmethod
     def circle2D(radius, colors):
@@ -134,25 +135,6 @@ class GL:
                 if inside(x, y, x_centro, y_centro, radius):
                     if 0 <= x < GL.width and 0 <= y < GL.height:
                         gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, cor)
-
-
-    @staticmethod
-    def triangleSet2D(vertices, colors):
-        """Função usada para renderizar TriangleSet2D."""
-        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/geometry2D.html#TriangleSet2D
-        # Nessa função você receberá os vertices de um triângulo no parâmetro vertices,
-        # esses pontos são uma lista de pontos x, y sempre na ordem. Assim point[0] é o
-        # valor da coordenada x do primeiro ponto, point[1] o valor y do primeiro ponto.
-        # Já point[2] é a coordenada x do segundo ponto e assim por diante. Assuma que a
-        # quantidade de pontos é sempre multiplo de 3, ou seja, 6 valores ou 12 valores, etc.
-        # O parâmetro colors é um dicionário com os tipos cores possíveis, para o TriangleSet2D
-        # você pode assumir inicialmente o desenho das linhas com a cor emissiva (emissiveColor).
-        print("TriangleSet2D : vertices = {0}".format(vertices)) # imprime no terminal
-        print("TriangleSet2D : colors = {0}".format(colors)) # imprime no terminal as cores
-
-        # Exemplo:
-        gpu.GPU.draw_pixel([6, 8], gpu.GPU.RGB8, [255, 255, 0])  # altera pixel (u, v, tipo, r, g, b)
-
 
     @staticmethod
     def triangleSet2D(vertices, colors):
@@ -192,6 +174,30 @@ class GL:
                         if 0 <= x < GL.width and 0 <= y < GL.height:
                             gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, cor)
 
+
+    @staticmethod
+    def triangleSet(point, colors):
+        """Função usada para renderizar TriangleSet."""
+        # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#TriangleSet
+        # Nessa função você receberá pontos no parâmetro point, esses pontos são uma lista
+        # de pontos x, y, e z sempre na ordem. Assim point[0] é o valor da coordenada x do
+        # primeiro ponto, point[1] o valor y do primeiro ponto, point[2] o valor z da
+        # coordenada z do primeiro ponto. Já point[3] é a coordenada x do segundo ponto e
+        # assim por diante.
+        # No TriangleSet os triângulos são informados individualmente, assim os três
+        # primeiros pontos definem um triângulo, os três próximos pontos definem um novo
+        # triângulo, e assim por diante.
+        # O parâmetro colors é um dicionário com os tipos cores possíveis, você pode assumir
+        # inicialmente, para o TriangleSet, o desenho das linhas com a cor emissiva
+        # (emissiveColor), conforme implementar novos materias você deverá suportar outros
+        # tipos de cores.
+
+        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
+        print("TriangleSet : pontos = {0}".format(point)) # imprime no terminal pontos
+        print("TriangleSet : colors = {0}".format(colors)) # imprime no terminal as cores
+
+        # Exemplo de desenho de um pixel branco na coordenada 10, 10
+        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
