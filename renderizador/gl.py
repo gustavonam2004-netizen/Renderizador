@@ -24,6 +24,19 @@ class GL:
     near = 0.01   # plano de corte próximo
     far = 1000    # plano de corte distante
 
+    matriz_modelo = [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ]
+
+    pilha_matrizes = []
+
+    posicao_camera = [0, 0, 10]
+    orientacao_camera = [0, 0, 1, 0]
+    campo_visao = math.pi / 4
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Definr parametros para câmera de razão de aspecto, plano próximo e distante."""
@@ -192,12 +205,122 @@ class GL:
         # (emissiveColor), conforme implementar novos materias você deverá suportar outros
         # tipos de cores.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TriangleSet : pontos = {0}".format(point)) # imprime no terminal pontos
-        print("TriangleSet : colors = {0}".format(colors)) # imprime no terminal as cores
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        cor = [round(componente * 255)
+            for componente in colors["emissiveColor"]]
+
+        def multiplicar_matriz_vetor(matriz, vetor):
+            resultado = [0, 0, 0, 0]
+            for linha in range(4):
+                for coluna in range(4):
+                    resultado[linha] += matriz[linha][coluna] * vetor[coluna]
+
+            return resultado
+
+        def rotacionar(ponto, rotacao):
+            eixo_x, eixo_y, eixo_z, angulo = rotacao
+            tamanho = math.sqrt(eixo_x ** 2 + eixo_y ** 2 + eixo_z ** 2)
+            if tamanho == 0:
+                return ponto
+
+            eixo_x = eixo_x / tamanho
+            eixo_y = eixo_y / tamanho
+            eixo_z = eixo_z / tamanho
+
+            c = math.cos(angulo)
+            s = math.sin(angulo)
+            t = 1 - c
+
+            matriz_rotacao = [
+                [t * eixo_x * eixo_x + c, t * eixo_x * eixo_y - s * eixo_z, t * eixo_x * eixo_z + s * eixo_y, 0],
+                [t * eixo_x * eixo_y + s * eixo_z, t * eixo_y * eixo_y + c, t * eixo_y * eixo_z - s * eixo_x, 0],
+                [t * eixo_x * eixo_z - s * eixo_y, t * eixo_y * eixo_z + s * eixo_x, t * eixo_z * eixo_z + c, 0],
+                [0, 0, 0, 1]
+            ]
+
+            return multiplicar_matriz_vetor(matriz_rotacao, ponto)
+
+        def transformar_ponto(x, y, z):
+            # Transformação do objeto.
+            ponto_transformado = multiplicar_matriz_vetor(
+                GL.matriz_modelo, [x, y, z, 1]
+            )
+
+            # Translação para a posição da câmera.
+            ponto_transformado[0] -= GL.posicao_camera[0]
+            ponto_transformado[1] -= GL.posicao_camera[1]
+            ponto_transformado[2] -= GL.posicao_camera[2]
+
+            # Rotação inversa da câmera.
+            eixo_x, eixo_y, eixo_z, angulo = GL.orientacao_camera
+            ponto_transformado = rotacionar(ponto_transformado, [eixo_x, eixo_y, eixo_z, -angulo])
+
+            # Projeção perspectiva.
+            z_camera = ponto_transformado[2]
+
+            if z_camera >= -0.1:
+                return None
+
+            aspecto = GL.width / GL.height
+            f = 1 / math.tan(GL.campo_visao / 2)
+
+            x_projetado = (ponto_transformado[0] * f / aspecto) / -z_camera
+            y_projetado = (ponto_transformado[1] * f) / -z_camera
+
+            x_tela = round((x_projetado + 1) * GL.width / 2)
+            y_tela = round((1 - y_projetado) * GL.height / 2)
+
+            return [x_tela, y_tela]
+
+        # Função que calcula o lado de uma reta
+        def L(x, y, x0, y0, x1, y1):
+            return ((y1 - y0) * x - (x1 - x0) * y + y0 * (x1 - x0) - x0 * (y1 - y0))
+
+        # Verifica se o ponto está dentro do triângulo
+        def inside(x, y, P0, P1, P2):
+            L0 = L(x, y, P0[0], P0[1], P1[0], P1[1])
+            L1 = L(x, y, P1[0], P1[1], P2[0], P2[1])
+            L2 = L(x, y, P2[0], P2[1], P0[0], P0[1])
+
+            return (
+                (L0 >= 0 and L1 >= 0 and L2 >= 0) or
+                (L0 <= 0 and L1 <= 0 and L2 <= 0)
+            )
+
+
+        # Cada triângulo possui 9 valores
+        for i in range(0, len(point), 9):
+            p0 = transformar_ponto(
+                point[i],
+                point[i + 1],
+                point[i + 2]
+            )
+
+            p1 = transformar_ponto(
+                point[i + 3],
+                point[i + 4],
+                point[i + 5]
+            )
+
+            p2 = transformar_ponto(
+                point[i + 6],
+                point[i + 7],
+                point[i + 8]
+            )
+
+            if p0 is not None and p1 is not None and p2 is not None:
+
+                # Limites do triângulo
+                min_x = min(p0[0], p1[0], p2[0])
+                max_x = max(p0[0], p1[0], p2[0])
+                min_y = min(p0[1], p1[1], p2[1])
+                max_y = max(p0[1], p1[1], p2[1])
+
+                # Percorre somente a área do triângulo
+                for y in range(min_y, max_y + 1):
+                    for x in range(min_x, max_x + 1):
+                        if 0 <= x < GL.width and 0 <= y < GL.height:
+                            if inside(x, y, p0, p1, p2):gpu.GPU.draw_pixel([x, y],gpu.GPU.RGB8,cor)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
@@ -206,11 +329,9 @@ class GL:
         # câmera virtual. Use esses dados para poder calcular e criar a matriz de projeção
         # perspectiva para poder aplicar nos pontos dos objetos geométricos.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Viewpoint : ", end='')
-        print("position = {0} ".format(position), end='')
-        print("orientation = {0} ".format(orientation), end='')
-        print("fieldOfView = {0} ".format(fieldOfView))
+        GL.posicao_camera = position
+        GL.orientacao_camera = orientation
+        GL.campo_visao = fieldOfView
 
     @staticmethod
     def transform_in(translation, scale, rotation):
@@ -226,15 +347,48 @@ class GL:
         # Quando começar a usar Transforms dentre de outros Transforms, mais a frente no curso
         # Você precisará usar alguma estrutura de dados pilha para organizar as matrizes.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Transform : ", end='')
-        if translation:
-            print("translation = {0} ".format(translation), end='') # imprime no terminal
-        if scale:
-            print("scale = {0} ".format(scale), end='') # imprime no terminal
+        GL.pilha_matrizes.append(GL.matriz_modelo)
+
+        tx, ty, tz = [0, 0, 0] if not translation else translation
+        sx, sy, sz = [1, 1, 1] if not scale else scale
+
+        matriz = [
+            [sx, 0, 0, tx],
+            [0, sy, 0, ty],
+            [0, 0, sz, tz],
+            [0, 0, 0, 1]
+        ]
+
         if rotation:
-            print("rotation = {0} ".format(rotation), end='') # imprime no terminal
-        print("")
+            eixo_x, eixo_y, eixo_z, angulo = rotation
+            tamanho = math.sqrt(eixo_x ** 2 + eixo_y ** 2 + eixo_z ** 2)
+
+            if tamanho != 0:
+                eixo_x /= tamanho
+                eixo_y /= tamanho
+                eixo_z /= tamanho
+
+                c = math.cos(angulo)
+                s = math.sin(angulo)
+                t = 1 - c
+
+                matriz_rotacao = [
+                    [t * eixo_x * eixo_x + c, t * eixo_x * eixo_y - s * eixo_z, t * eixo_x * eixo_z + s * eixo_y, 0],
+                    [t * eixo_x * eixo_y + s * eixo_z, t * eixo_y * eixo_y + c, t * eixo_y * eixo_z - s * eixo_x, 0],
+                    [t * eixo_x * eixo_z - s * eixo_y, t * eixo_y * eixo_z + s * eixo_x, t * eixo_z * eixo_z + c, 0],
+                    [0, 0, 0, 1]
+                ]
+
+                resultado = [[0, 0, 0, 0] for _ in range(4)]
+
+                for linha in range(4):
+                    for coluna in range(4):
+                        for k in range(4):
+                            resultado[linha][coluna] += (matriz[linha][k] * matriz_rotacao[k][coluna])
+
+                matriz = resultado
+
+        GL.matriz_modelo = matriz
 
     @staticmethod
     def transform_out():
