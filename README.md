@@ -1,4 +1,4 @@
-# Renderizador
+# Renderizador (Gustavo Sang Min Nam / Lucas Gomes Moreira)
 Renderizador base para o curso de Computação Gráfica
 
 Pré-requisitos:
