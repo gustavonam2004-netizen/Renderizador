@@ -46,6 +46,120 @@ class GL:
         GL.far = far
 
     @staticmethod
+    def _mat_mult(A, B):
+        """Multiplica duas matrizes 4x4."""
+        resultado = [[0, 0, 0, 0] for _ in range(4)]
+        for linha in range(4):
+            for coluna in range(4):
+                soma = 0
+                for k in range(4):
+                    soma += A[linha][k] * B[k][coluna]
+                resultado[linha][coluna] = soma
+        return resultado
+
+    @staticmethod
+    def _mat_vec_mult(matriz, vetor):
+        """Multiplica uma matriz 4x4 por um vetor homogêneo [x, y, z, 1]."""
+        resultado = [0, 0, 0, 0]
+        for linha in range(4):
+            for coluna in range(4):
+                resultado[linha] += matriz[linha][coluna] * vetor[coluna]
+        return resultado
+
+    @staticmethod
+    def _matriz_rotacao(eixo_x, eixo_y, eixo_z, angulo):
+        """Monta a matriz 4x4 de rotação a partir de um eixo (x, y, z) e um ângulo."""
+        tamanho = math.sqrt(eixo_x ** 2 + eixo_y ** 2 + eixo_z ** 2)
+
+        if tamanho == 0:
+            return [
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1]
+            ]
+
+        eixo_x /= tamanho
+        eixo_y /= tamanho
+        eixo_z /= tamanho
+
+        c = math.cos(angulo)
+        s = math.sin(angulo)
+        t = 1 - c
+
+        return [
+            [t * eixo_x * eixo_x + c, t * eixo_x * eixo_y - s * eixo_z, t * eixo_x * eixo_z + s * eixo_y, 0],
+            [t * eixo_x * eixo_y + s * eixo_z, t * eixo_y * eixo_y + c, t * eixo_y * eixo_z - s * eixo_x, 0],
+            [t * eixo_x * eixo_z - s * eixo_y, t * eixo_y * eixo_z + s * eixo_x, t * eixo_z * eixo_z + c, 0],
+            [0, 0, 0, 1]
+        ]
+
+    @staticmethod
+    def _transformar_ponto(x, y, z):
+        """Aplica modelo -> câmera -> projeção perspectiva -> tela.
+
+        Retorna [x_tela, y_tela] ou None se o ponto ficar atrás da câmera
+        (não deve ser desenhado)."""
+        ponto = GL._mat_vec_mult(GL.matriz_modelo, [x, y, z, 1])
+
+        # Translação para a posição da câmera.
+        ponto[0] -= GL.posicao_camera[0]
+        ponto[1] -= GL.posicao_camera[1]
+        ponto[2] -= GL.posicao_camera[2]
+
+        # Rotação inversa da câmera.
+        eixo_x, eixo_y, eixo_z, angulo = GL.orientacao_camera
+        matriz_rotacao_inversa = GL._matriz_rotacao(eixo_x, eixo_y, eixo_z, -angulo)
+        ponto = GL._mat_vec_mult(matriz_rotacao_inversa, ponto)
+
+        # Projeção perspectiva.
+        z_camera = ponto[2]
+
+        if z_camera >= -0.1:
+            return None
+
+        aspecto = GL.width / GL.height
+        f = 1 / math.tan(GL.campo_visao / 2)
+
+        x_projetado = (ponto[0] * f / aspecto) / -z_camera
+        y_projetado = (ponto[1] * f) / -z_camera
+
+        x_tela = round((x_projetado + 1) * GL.width / 2)
+        y_tela = round((1 - y_projetado) * GL.height / 2)
+
+        return [x_tela, y_tela]
+
+    @staticmethod
+    def _lado(x, y, x0, y0, x1, y1):
+        """Calcula de que lado da reta (x0,y0)-(x1,y1) o ponto (x,y) está."""
+        return (y1 - y0) * x - (x1 - x0) * y + y0 * (x1 - x0) - x0 * (y1 - y0)
+
+    @staticmethod
+    def _dentro_triangulo(x, y, P0, P1, P2):
+        """Testa se o pixel (x,y) está dentro do triângulo P0-P1-P2."""
+        L0 = GL._lado(x, y, P0[0], P0[1], P1[0], P1[1])
+        L1 = GL._lado(x, y, P1[0], P1[1], P2[0], P2[1])
+        L2 = GL._lado(x, y, P2[0], P2[1], P0[0], P0[1])
+
+        return (
+            (L0 >= 0 and L1 >= 0 and L2 >= 0) or
+            (L0 <= 0 and L1 <= 0 and L2 <= 0)
+        )
+
+    @staticmethod
+    def _rasterizar_triangulo(p0, p1, p2, cor):
+        """Percorre a bounding box (já recortada pela tela) e pinta os pixels internos."""
+        min_x = max(min(p0[0], p1[0], p2[0]), 0)
+        max_x = min(max(p0[0], p1[0], p2[0]), GL.width - 1)
+        min_y = max(min(p0[1], p1[1], p2[1]), 0)
+        max_y = min(max(p0[1], p1[1], p2[1]), GL.height - 1)
+
+        for y in range(min_y, max_y + 1):
+            for x in range(min_x, max_x + 1):
+                if GL._dentro_triangulo(x, y, p0, p1, p2):
+                    gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, cor)
+
+    @staticmethod
     def polypoint2D(point, colors):
         """Função usada para renderizar Polypoint2D."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/geometry2D.html#Polypoint2D
@@ -92,37 +206,37 @@ class GL:
             dx = x1 - x0
             dy = y1 - y0
 
-        if abs(dx) >= abs(dy):
-            if x0 > x1:
-                x0, x1 = x1, x0
-                y0, y1 = y1, y0
+            if abs(dx) >= abs(dy):
+                if x0 > x1:
+                    x0, x1 = x1, x0
+                    y0, y1 = y1, y0
 
-            if x1 != x0:
-                s = (y1 - y0) / (x1 - x0)
+                if x1 != x0:
+                    s = (y1 - y0) / (x1 - x0)
+                else:
+                    s = 0
+
+                y = y0
+
+                for x in range(math.floor(x0), math.floor(x1) + 1):
+                    pixel_y = math.floor(y)
+                    if 0 <= x < GL.width and 0 <= pixel_y < GL.height:
+                        gpu.GPU.draw_pixel([x, pixel_y], gpu.GPU.RGB8, cor)
+                    y += s
+
             else:
-                s = 0
+                if y0 > y1:
+                    x0, x1 = x1, x0
+                    y0, y1 = y1, y0
 
-            y = y0
-            
-            for x in range(math.floor(x0), math.floor(x1) + 1):
-                pixel_y = math.floor(y)
-                if 0 <= x < GL.width and 0 <= pixel_y < GL.height:
-                    gpu.GPU.draw_pixel([x, pixel_y], gpu.GPU.RGB8, cor)
-                y += s
+                s = (x1 - x0) / (y1 - y0)
+                x = x0
 
-        else:
-            if y0 > y1:
-                x0, x1 = x1, x0
-                y0, y1 = y1, y0
-
-            s = (x1 - x0) / (y1 - y0)
-            x = x0
-
-            for y in range(math.floor(y0), math.floor(y1) + 1):
-                pixel_x = math.floor(x)
-                if 0 <= pixel_x < GL.width and 0 <= y < GL.height:
-                    gpu.GPU.draw_pixel([pixel_x, y], gpu.GPU.RGB8, cor)
-                x += s
+                for y in range(math.floor(y0), math.floor(y1) + 1):
+                    pixel_x = math.floor(x)
+                    if 0 <= pixel_x < GL.width and 0 <= y < GL.height:
+                        gpu.GPU.draw_pixel([pixel_x, y], gpu.GPU.RGB8, cor)
+                    x += s
                 
 
     @staticmethod
@@ -163,172 +277,37 @@ class GL:
         cor = [round(componente * 255)
             for componente in colors["emissiveColor"]]
 
-        def L(x, y, x0, y0, x1, y1):
-            return ((y1 - y0) * x - (x1 - x0) * y + y0 * (x1 - x0) - x0 * (y1 - y0))
-
-        def inside(x, y, P0, P1, P2):
-            L0 = L(x, y, P0[0], P0[1], P1[0], P1[1])
-            L1 = L(x, y, P1[0], P1[1], P2[0], P2[1])
-            L2 = L(x, y, P2[0], P2[1], P0[0], P0[1])
-
-            return (
-                (L0 >= 0 and L1 >= 0 and L2 >= 0) or
-                (L0 <= 0 and L1 <= 0 and L2 <= 0)
-            )
-
         for i in range(0, len(vertices), 6):
             P0 = (vertices[i],     vertices[i + 1])
             P1 = (vertices[i + 2], vertices[i + 3])
             P2 = (vertices[i + 4], vertices[i + 5])
 
-            for y in range(GL.height):
-                for x in range(GL.width):
-                    if inside(x, y, P0, P1, P2):
-                        if 0 <= x < GL.width and 0 <= y < GL.height:
-                            gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, cor)
-
+            GL._rasterizar_triangulo(P0, P1, P2, cor)
 
     @staticmethod
     def triangleSet(point, colors):
         """Função usada para renderizar TriangleSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#TriangleSet
-        # Nessa função você receberá pontos no parâmetro point, esses pontos são uma lista
-        # de pontos x, y, e z sempre na ordem. Assim point[0] é o valor da coordenada x do
-        # primeiro ponto, point[1] o valor y do primeiro ponto, point[2] o valor z da
-        # coordenada z do primeiro ponto. Já point[3] é a coordenada x do segundo ponto e
-        # assim por diante.
         # No TriangleSet os triângulos são informados individualmente, assim os três
         # primeiros pontos definem um triângulo, os três próximos pontos definem um novo
         # triângulo, e assim por diante.
-        # O parâmetro colors é um dicionário com os tipos cores possíveis, você pode assumir
-        # inicialmente, para o TriangleSet, o desenho das linhas com a cor emissiva
-        # (emissiveColor), conforme implementar novos materias você deverá suportar outros
-        # tipos de cores.
-
 
         cor = [round(componente * 255)
             for componente in colors["emissiveColor"]]
 
-        def multiplicar_matriz_vetor(matriz, vetor):
-            resultado = [0, 0, 0, 0]
-            for linha in range(4):
-                for coluna in range(4):
-                    resultado[linha] += matriz[linha][coluna] * vetor[coluna]
-
-            return resultado
-
-        def rotacionar(ponto, rotacao):
-            eixo_x, eixo_y, eixo_z, angulo = rotacao
-            tamanho = math.sqrt(eixo_x ** 2 + eixo_y ** 2 + eixo_z ** 2)
-            if tamanho == 0:
-                return ponto
-
-            eixo_x = eixo_x / tamanho
-            eixo_y = eixo_y / tamanho
-            eixo_z = eixo_z / tamanho
-
-            c = math.cos(angulo)
-            s = math.sin(angulo)
-            t = 1 - c
-
-            matriz_rotacao = [
-                [t * eixo_x * eixo_x + c, t * eixo_x * eixo_y - s * eixo_z, t * eixo_x * eixo_z + s * eixo_y, 0],
-                [t * eixo_x * eixo_y + s * eixo_z, t * eixo_y * eixo_y + c, t * eixo_y * eixo_z - s * eixo_x, 0],
-                [t * eixo_x * eixo_z - s * eixo_y, t * eixo_y * eixo_z + s * eixo_x, t * eixo_z * eixo_z + c, 0],
-                [0, 0, 0, 1]
-            ]
-
-            return multiplicar_matriz_vetor(matriz_rotacao, ponto)
-
-        def transformar_ponto(x, y, z):
-            # Transformação do objeto.
-            ponto_transformado = multiplicar_matriz_vetor(
-                GL.matriz_modelo, [x, y, z, 1]
-            )
-
-            # Translação para a posição da câmera.
-            ponto_transformado[0] -= GL.posicao_camera[0]
-            ponto_transformado[1] -= GL.posicao_camera[1]
-            ponto_transformado[2] -= GL.posicao_camera[2]
-
-            # Rotação inversa da câmera.
-            eixo_x, eixo_y, eixo_z, angulo = GL.orientacao_camera
-            ponto_transformado = rotacionar(ponto_transformado, [eixo_x, eixo_y, eixo_z, -angulo])
-
-            # Projeção perspectiva.
-            z_camera = ponto_transformado[2]
-
-            if z_camera >= -0.1:
-                return None
-
-            aspecto = GL.width / GL.height
-            f = 1 / math.tan(GL.campo_visao / 2)
-
-            x_projetado = (ponto_transformado[0] * f / aspecto) / -z_camera
-            y_projetado = (ponto_transformado[1] * f) / -z_camera
-
-            x_tela = round((x_projetado + 1) * GL.width / 2)
-            y_tela = round((1 - y_projetado) * GL.height / 2)
-
-            return [x_tela, y_tela]
-
-        # Função que calcula o lado de uma reta
-        def L(x, y, x0, y0, x1, y1):
-            return ((y1 - y0) * x - (x1 - x0) * y + y0 * (x1 - x0) - x0 * (y1 - y0))
-
-        # Verifica se o ponto está dentro do triângulo
-        def inside(x, y, P0, P1, P2):
-            L0 = L(x, y, P0[0], P0[1], P1[0], P1[1])
-            L1 = L(x, y, P1[0], P1[1], P2[0], P2[1])
-            L2 = L(x, y, P2[0], P2[1], P0[0], P0[1])
-
-            return (
-                (L0 >= 0 and L1 >= 0 and L2 >= 0) or
-                (L0 <= 0 and L1 <= 0 and L2 <= 0)
-            )
-
-
-        # Cada triângulo possui 9 valores
+        # Cada triângulo possui 9 valores (3 vértices x, y, z)
         for i in range(0, len(point), 9):
-            p0 = transformar_ponto(
-                point[i],
-                point[i + 1],
-                point[i + 2]
-            )
 
-            p1 = transformar_ponto(
-                point[i + 3],
-                point[i + 4],
-                point[i + 5]
-            )
-
-            p2 = transformar_ponto(
-                point[i + 6],
-                point[i + 7],
-                point[i + 8]
-            )
+            p0 = GL._transformar_ponto(point[i], point[i + 1], point[i + 2])
+            p1 = GL._transformar_ponto(point[i + 3], point[i + 4], point[i + 5])
+            p2 = GL._transformar_ponto(point[i + 6], point[i + 7], point[i + 8])
 
             if p0 is not None and p1 is not None and p2 is not None:
-
-                # Limites do triângulo
-                min_x = min(p0[0], p1[0], p2[0])
-                max_x = max(p0[0], p1[0], p2[0])
-                min_y = min(p0[1], p1[1], p2[1])
-                max_y = max(p0[1], p1[1], p2[1])
-
-                # Percorre somente a área do triângulo
-                for y in range(min_y, max_y + 1):
-                    for x in range(min_x, max_x + 1):
-                        if 0 <= x < GL.width and 0 <= y < GL.height:
-                            if inside(x, y, p0, p1, p2):gpu.GPU.draw_pixel([x, y],gpu.GPU.RGB8,cor)
+                GL._rasterizar_triangulo(p0, p1, p2, cor)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
         """Função usada para renderizar (na verdade coletar os dados) de Viewpoint."""
-        # Na função de viewpoint você receberá a posição, orientação e campo de visão da
-        # câmera virtual. Use esses dados para poder calcular e criar a matriz de projeção
-        # perspectiva para poder aplicar nos pontos dos objetos geométricos.
-
         GL.posicao_camera = position
         GL.orientacao_camera = orientation
         GL.campo_visao = fieldOfView
@@ -336,161 +315,178 @@ class GL:
     @staticmethod
     def transform_in(translation, scale, rotation):
         """Função usada para renderizar (na verdade coletar os dados) de Transform."""
-        # A função transform_in será chamada quando se entrar em um nó X3D do tipo Transform
-        # do grafo de cena. Os valores passados são a escala em um vetor [x, y, z]
-        # indicando a escala em cada direção, a translação [x, y, z] nas respectivas
-        # coordenadas e finalmente a rotação por [x, y, z, t] sendo definida pela rotação
-        # do objeto ao redor do eixo x, y, z por t radianos, seguindo a regra da mão direita.
-        # ESSES NÃO SÃO OS VALORES DE QUATÉRNIOS AS CONTAS AINDA PRECISAM SER FEITAS.
-        # Quando se entrar em um nó transform se deverá salvar a matriz de transformação dos
-        # modelos do mundo para depois potencialmente usar em outras chamadas. 
-        # Quando começar a usar Transforms dentre de outros Transforms, mais a frente no curso
-        # Você precisará usar alguma estrutura de dados pilha para organizar as matrizes.
-
+        # Empilha a matriz do PAI antes de calcular a matriz local, para podermos
+        # restaurá-la depois em transform_out().
         GL.pilha_matrizes.append(GL.matriz_modelo)
 
         tx, ty, tz = [0, 0, 0] if not translation else translation
         sx, sy, sz = [1, 1, 1] if not scale else scale
 
-        matriz = [
-            [sx, 0, 0, tx],
-            [0, sy, 0, ty],
-            [0, 0, sz, tz],
+        matriz_translacao = [
+            [1, 0, 0, tx],
+            [0, 1, 0, ty],
+            [0, 0, 1, tz],
+            [0, 0, 0, 1]
+        ]
+
+        matriz_escala = [
+            [sx, 0, 0, 0],
+            [0, sy, 0, 0],
+            [0, 0, sz, 0],
             [0, 0, 0, 1]
         ]
 
         if rotation:
             eixo_x, eixo_y, eixo_z, angulo = rotation
-            tamanho = math.sqrt(eixo_x ** 2 + eixo_y ** 2 + eixo_z ** 2)
+            matriz_rotacao = GL._matriz_rotacao(eixo_x, eixo_y, eixo_z, angulo)
+        else:
+            matriz_rotacao = [
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1]
+            ]
 
-            if tamanho != 0:
-                eixo_x /= tamanho
-                eixo_y /= tamanho
-                eixo_z /= tamanho
+        # Ordem padrão X3D para a matriz local: Translação * Rotação * Escala
+        # (escala primeiro, depois rotaciona, depois translada).
+        matriz_local = GL._mat_mult(GL._mat_mult(matriz_translacao, matriz_rotacao), matriz_escala)
 
-                c = math.cos(angulo)
-                s = math.sin(angulo)
-                t = 1 - c
-
-                matriz_rotacao = [
-                    [t * eixo_x * eixo_x + c, t * eixo_x * eixo_y - s * eixo_z, t * eixo_x * eixo_z + s * eixo_y, 0],
-                    [t * eixo_x * eixo_y + s * eixo_z, t * eixo_y * eixo_y + c, t * eixo_y * eixo_z - s * eixo_x, 0],
-                    [t * eixo_x * eixo_z - s * eixo_y, t * eixo_y * eixo_z + s * eixo_x, t * eixo_z * eixo_z + c, 0],
-                    [0, 0, 0, 1]
-                ]
-
-                resultado = [[0, 0, 0, 0] for _ in range(4)]
-
-                for linha in range(4):
-                    for coluna in range(4):
-                        for k in range(4):
-                            resultado[linha][coluna] += (matriz[linha][k] * matriz_rotacao[k][coluna])
-
-                matriz = resultado
-
-        GL.matriz_modelo = matriz
+        # Combina com a matriz do pai: mundo = pai * local
+        GL.matriz_modelo = GL._mat_mult(GL.matriz_modelo, matriz_local)
 
     @staticmethod
     def transform_out():
         """Função usada para renderizar (na verdade coletar os dados) de Transform."""
-        # A função transform_out será chamada quando se sair em um nó X3D do tipo Transform do
-        # grafo de cena. Não são passados valores, porém quando se sai de um nó transform se
-        # deverá recuperar a matriz de transformação dos modelos do mundo da estrutura de
-        # pilha implementada.
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Saindo de Transform")
+        # Ao sair do nó Transform, recuperamos a matriz do pai que empilhamos em
+        # transform_in().
+        GL.matriz_modelo = GL.pilha_matrizes.pop()
 
     @staticmethod
     def triangleStripSet(point, stripCount, colors):
         """Função usada para renderizar TriangleStripSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#TriangleStripSet
-        # A função triangleStripSet é usada para desenhar tiras de triângulos interconectados,
-        # você receberá as coordenadas dos pontos no parâmetro point, esses pontos são uma
-        # lista de pontos x, y, e z sempre na ordem. Assim point[0] é o valor da coordenada x
-        # do primeiro ponto, point[1] o valor y do primeiro ponto, point[2] o valor z da
-        # coordenada z do primeiro ponto. Já point[3] é a coordenada x do segundo ponto e assim
-        # por diante. No TriangleStripSet a quantidade de vértices a serem usados é informado
-        # em uma lista chamada stripCount (perceba que é uma lista). Ligue os vértices na ordem,
-        # primeiro triângulo será com os vértices 0, 1 e 2, depois serão os vértices 1, 2 e 3,
-        # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
-        # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
+        # point é uma lista de vértices x, y, z. stripCount informa quantos vértices
+        # (não quantos triângulos) cada tira consome, na ordem. Dentro de uma tira,
+        # o triângulo j é formado pelos vértices (j, j+1, j+2), mas para manter a
+        # orientação (winding) consistente, invertemos a ordem dos dois primeiros
+        # vértices quando j é ímpar.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TriangleStripSet : pontos = {0} ".format(point), end='')
-        for i, strip in enumerate(stripCount):
-            print("strip[{0}] = {1} ".format(i, strip), end='')
-        print("")
-        print("TriangleStripSet : colors = {0}".format(colors)) # imprime no terminal as cores
+        cor = [round(componente * 255)
+            for componente in colors["emissiveColor"]]
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        pontos3D = [
+            (point[i], point[i + 1], point[i + 2])
+            for i in range(0, len(point), 3)
+        ]
+
+        indice = 0
+        for count in stripCount:
+            tira = pontos3D[indice:indice + count]
+            indice += count
+
+            pontos_tela = [GL._transformar_ponto(*p) for p in tira]
+
+            for j in range(len(pontos_tela) - 2):
+                if j % 2 == 0:
+                    p0, p1, p2 = pontos_tela[j], pontos_tela[j + 1], pontos_tela[j + 2]
+                else:
+                    p0, p1, p2 = pontos_tela[j + 1], pontos_tela[j], pontos_tela[j + 2]
+
+                if p0 is not None and p1 is not None and p2 is not None:
+                    GL._rasterizar_triangulo(p0, p1, p2, cor)
 
     @staticmethod
     def indexedTriangleStripSet(point, index, colors):
         """Função usada para renderizar IndexedTriangleStripSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#IndexedTriangleStripSet
-        # A função indexedTriangleStripSet é usada para desenhar tiras de triângulos
-        # interconectados, você receberá as coordenadas dos pontos no parâmetro point, esses
-        # pontos são uma lista de pontos x, y, e z sempre na ordem. Assim point[0] é o valor
-        # da coordenada x do primeiro ponto, point[1] o valor y do primeiro ponto, point[2]
-        # o valor z da coordenada z do primeiro ponto. Já point[3] é a coordenada x do
-        # segundo ponto e assim por diante. No IndexedTriangleStripSet uma lista informando
-        # como conectar os vértices é informada em index, o valor -1 indica que a lista
-        # acabou. A ordem de conexão será de 3 em 3 pulando um índice. Por exemplo: o
-        # primeiro triângulo será com os vértices 0, 1 e 2, depois serão os vértices 1, 2 e 3,
-        # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
-        # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
+        # point contém os vértices x, y, z. index é uma lista de índices para esses
+        # vértices, onde -1 marca o fim de uma tira (pode haver mais de uma tira na
+        # mesma chamada). A regra de montagem dos triângulos dentro de cada tira é a
+        # mesma do triangleStripSet.
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("IndexedTriangleStripSet : pontos = {0}, index = {1}".format(point, index))
-        print("IndexedTriangleStripSet : colors = {0}".format(colors)) # imprime as cores
+        cor = [round(componente * 255)
+            for componente in colors["emissiveColor"]]
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        pontos3D = [
+            (point[i], point[i + 1], point[i + 2])
+            for i in range(0, len(point), 3)
+        ]
+
+        # Separa a lista de índices em tiras, usando -1 como delimitador.
+        tiras = []
+        tira_atual = []
+        for idx in index:
+            if idx == -1:
+                if tira_atual:
+                    tiras.append(tira_atual)
+                tira_atual = []
+            else:
+                tira_atual.append(idx)
+        if tira_atual:
+            tiras.append(tira_atual)
+
+        for tira in tiras:
+            pontos_tela = [GL._transformar_ponto(*pontos3D[i]) for i in tira]
+
+            for j in range(len(pontos_tela) - 2):
+                if j % 2 == 0:
+                    p0, p1, p2 = pontos_tela[j], pontos_tela[j + 1], pontos_tela[j + 2]
+                else:
+                    p0, p1, p2 = pontos_tela[j + 1], pontos_tela[j], pontos_tela[j + 2]
+
+                if p0 is not None and p1 is not None and p2 is not None:
+                    GL._rasterizar_triangulo(p0, p1, p2, cor)
 
     @staticmethod
     def indexedFaceSet(coord, coordIndex, colorPerVertex, color, colorIndex,
                        texCoord, texCoordIndex, colors, current_texture):
         """Função usada para renderizar IndexedFaceSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/geometry3D.html#IndexedFaceSet
-        # A função indexedFaceSet é usada para desenhar malhas de triângulos. Ela funciona de
-        # forma muito simular a IndexedTriangleStripSet porém com mais recursos.
-        # Você receberá as coordenadas dos pontos no parâmetro cord, esses
-        # pontos são uma lista de pontos x, y, e z sempre na ordem. Assim coord[0] é o valor
-        # da coordenada x do primeiro ponto, coord[1] o valor y do primeiro ponto, coord[2]
-        # o valor z da coordenada z do primeiro ponto. Já coord[3] é a coordenada x do
-        # segundo ponto e assim por diante. No IndexedFaceSet uma lista de vértices é informada
-        # em coordIndex, o valor -1 indica que a lista acabou.
-        # A ordem de conexão não possui uma ordem oficial, mas em geral se o primeiro ponto com os dois
-        # seguintes e depois este mesmo primeiro ponto com o terçeiro e quarto ponto. Por exemplo: numa
-        # sequencia 0, 1, 2, 3, 4, -1 o primeiro triângulo será com os vértices 0, 1 e 2, depois serão
-        # os vértices 0, 2 e 3, e depois 0, 3 e 4, e assim por diante, até chegar no final da lista.
-        # Adicionalmente essa implementação do IndexedFace aceita cores por vértices, assim
-        # se a flag colorPerVertex estiver habilitada, os vértices também possuirão cores
-        # que servem para definir a cor interna dos poligonos, para isso faça um cálculo
-        # baricêntrico de que cor deverá ter aquela posição. Da mesma forma se pode definir uma
-        # textura para o poligono, para isso, use as coordenadas de textura e depois aplique a
-        # cor da textura conforme a posição do mapeamento. Dentro da classe GPU já está
-        # implementadado um método para a leitura de imagens.
+        # coord contém os vértices x, y, z. coordIndex é uma lista de índices desses
+        # vértices, onde -1 marca o fim de uma face (a face pode ter mais de 3
+        # vértices). Cada face é triangulada em leque a partir do primeiro vértice:
+        # (v0, v1, v2), (v0, v2, v3), (v0, v3, v4), ...
 
-        # Os prints abaixo são só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("IndexedFaceSet : ")
-        if coord:
-            print("\tpontos(x, y, z) = {0}, coordIndex = {1}".format(coord, coordIndex))
-        print("colorPerVertex = {0}".format(colorPerVertex))
-        if colorPerVertex and color and colorIndex:
-            print("\tcores(r, g, b) = {0}, colorIndex = {1}".format(color, colorIndex))
-        if texCoord and texCoordIndex:
-            print("\tpontos(u, v) = {0}, texCoordIndex = {1}".format(texCoord, texCoordIndex))
-        if current_texture:
-            image = gpu.GPU.load_texture(current_texture[0])
-            print("\t Matriz com image = {0}".format(image))
-            print("\t Dimensões da image = {0}".format(image.shape))
-        print("IndexedFaceSet : colors = {0}".format(colors))  # imprime no terminal as cores
+        cor = [round(componente * 255)
+            for componente in colors["emissiveColor"]]
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        if not coord or not coordIndex:
+            return
+
+        pontos3D = [
+            (coord[i], coord[i + 1], coord[i + 2])
+            for i in range(0, len(coord), 3)
+        ]
+
+        # Separa coordIndex em faces, usando -1 como delimitador.
+        faces = []
+        face_atual = []
+        for idx in coordIndex:
+            if idx == -1:
+                if face_atual:
+                    faces.append(face_atual)
+                face_atual = []
+            else:
+                face_atual.append(idx)
+        if face_atual:
+            faces.append(face_atual)
+
+        for face in faces:
+            if len(face) < 3:
+                continue
+
+            v0 = face[0]
+            p0 = GL._transformar_ponto(*pontos3D[v0])
+
+            for k in range(1, len(face) - 1):
+                v1 = face[k]
+                v2 = face[k + 1]
+
+                p1 = GL._transformar_ponto(*pontos3D[v1])
+                p2 = GL._transformar_ponto(*pontos3D[v2])
+
+                if p0 is not None and p1 is not None and p2 is not None:
+                    GL._rasterizar_triangulo(p0, p1, p2, cor)
 
     @staticmethod
     def box(size, colors):
