@@ -274,15 +274,33 @@ class GL:
         # quantidade de pontos é sempre multiplo de 3, ou seja, 6 valores ou 12 valores, etc.
         # O parâmetro colors é um dicionário com os tipos cores possíveis, para o TriangleSet2D
         # você pode assumir inicialmente o desenho das linhas com a cor emissiva (emissiveColor).
+        escala = 2
         cor = [round(componente * 255)
             for componente in colors["emissiveColor"]]
 
-        for i in range(0, len(vertices), 6):
-            P0 = (vertices[i],     vertices[i + 1])
-            P1 = (vertices[i + 2], vertices[i + 3])
-            P2 = (vertices[i + 4], vertices[i + 5])
+        def lado(x, y, p0, p1):
+            return ((p1[1] - p0[1]) * x -(p1[0] - p0[0]) * y +p0[1] * (p1[0] - p0[0]) -p0[0] * (p1[1] - p0[1]))
 
-            GL._rasterizar_triangulo(P0, P1, P2, cor)
+        for i in range(0, len(vertices), 6):
+            p0 = [vertices[i] * escala, vertices[i + 1] * escala]
+            p1 = [vertices[i + 2] * escala, vertices[i + 3] * escala]
+            p2 = [vertices[i + 4] * escala, vertices[i + 5] * escala]
+
+            min_x = max(0, math.floor(min(p0[0], p1[0], p2[0])))
+            max_x = min(GL.width * escala - 1,
+                        math.ceil(max(p0[0], p1[0], p2[0])))
+            min_y = max(0, math.floor(min(p0[1], p1[1], p2[1])))
+            max_y = min(GL.height * escala - 1,
+                        math.ceil(max(p0[1], p1[1], p2[1])))
+
+            for y in range(min_y, max_y + 1):
+                for x in range(min_x, max_x + 1):
+                    l0 = lado(x + 0.5, y + 0.5, p0, p1)
+                    l1 = lado(x + 0.5, y + 0.5, p1, p2)
+                    l2 = lado(x + 0.5, y + 0.5, p2, p0)
+
+                    if ((l0 >= 0 and l1 >= 0 and l2 >= 0) or(l0 <= 0 and l1 <= 0 and l2 <= 0)):
+                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, cor)
 
     @staticmethod
     def triangleSet(point, colors):
@@ -292,18 +310,22 @@ class GL:
         # primeiros pontos definem um triângulo, os três próximos pontos definem um novo
         # triângulo, e assim por diante.
 
-        cor = [round(componente * 255)
-            for componente in colors["emissiveColor"]]
+        indices = []
 
-        # Cada triângulo possui 9 valores (3 vértices x, y, z)
-        for i in range(0, len(point), 9):
+        for i in range(0, len(point) // 3, 3):
+            indices.extend([i, i + 1, i + 2, -1])
 
-            p0 = GL._transformar_ponto(point[i], point[i + 1], point[i + 2])
-            p1 = GL._transformar_ponto(point[i + 3], point[i + 4], point[i + 5])
-            p2 = GL._transformar_ponto(point[i + 6], point[i + 7], point[i + 8])
-
-            if p0 is not None and p1 is not None and p2 is not None:
-                GL._rasterizar_triangulo(p0, p1, p2, cor)
+        GL.indexedFaceSet(
+            coord=point,
+            coordIndex=indices,
+            colorPerVertex=False,
+            color=None,
+            colorIndex=[],
+            texCoord=None,
+            texCoordIndex=[],
+            colors=colors,
+            current_texture=[]
+        )
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
@@ -447,46 +469,298 @@ class GL:
         # vértices). Cada face é triangulada em leque a partir do primeiro vértice:
         # (v0, v1, v2), (v0, v2, v3), (v0, v3, v4), ...
 
-        cor = [round(componente * 255)
-            for componente in colors["emissiveColor"]]
+        escala = 2
+        cor_material = [round(componente * 255)
+                        for componente in colors["emissiveColor"]]
+        transparencia = colors["transparency"]
 
-        if not coord or not coordIndex:
-            return
+        def multiplicar_matriz_vetor(matriz, vetor):
+            return [
+                sum(matriz[linha][coluna] * vetor[coluna]
+                    for coluna in range(4))
+                for linha in range(4)
+            ]
 
-        pontos3D = [
-            (coord[i], coord[i + 1], coord[i + 2])
-            for i in range(0, len(coord), 3)
-        ]
+        def projetar(ponto):
+            ponto = multiplicar_matriz_vetor(GL.matriz_modelo, [ponto[0], ponto[1], ponto[2], 1])
 
-        # Separa coordIndex em faces, usando -1 como delimitador.
-        faces = []
-        face_atual = []
-        for idx in coordIndex:
-            if idx == -1:
-                if face_atual:
-                    faces.append(face_atual)
-                face_atual = []
+            ponto[0] -= GL.posicao_camera[0]
+            ponto[1] -= GL.posicao_camera[1]
+            ponto[2] -= GL.posicao_camera[2]
+
+            eixo_x, eixo_y, eixo_z, angulo = GL.orientacao_camera
+            matriz_camera = GL._matriz_rotacao(eixo_x, eixo_y, eixo_z, -angulo)
+            ponto = multiplicar_matriz_vetor(matriz_camera, ponto)
+
+            z_camera = ponto[2]
+            distancia = -z_camera
+
+            if distancia <= GL.near:
+                return None
+
+            aspecto = GL.width / GL.height
+            f = 1 / math.tan(GL.campo_visao / 2)
+
+            x_ndc = (ponto[0] * f / aspecto) / distancia
+            y_ndc = (ponto[1] * f) / distancia
+
+            # Z depois da projeção perspectiva, normalizado para [0, 1].
+            z_ndc = ((GL.far + GL.near) / (GL.far - GL.near) - (2 * GL.far * GL.near) / ((GL.far - GL.near) * distancia))
+            z_buffer = (z_ndc + 1) / 2
+
+            return [(x_ndc + 1) * GL.width * escala / 2, (1 - y_ndc) * GL.height * escala / 2,z_buffer, distancia]
+
+        def separar_faces(indices):
+            faces = []
+            face = []
+
+            for indice in indices:
+                if indice == -1:
+                    if face:
+                        faces.append(face)
+                    face = []
+                else:
+                    face.append(indice)
+
+            if face:
+                faces.append(face)
+
+            return faces
+
+        def baricentricas(x, y, p0, p1, p2):
+            area = ((p1[1] - p2[1]) * (p0[0] - p2[0]) + (p2[0] - p1[0]) * (p0[1] - p2[1]))
+
+            if area == 0:
+                return None
+
+            alfa = ((p1[1] - p2[1]) * (x - p2[0]) + (p2[0] - p1[0]) * (y - p2[1])) / area
+
+            beta = ((p2[1] - p0[1]) * (x - p2[0]) +(p0[0] - p2[0]) * (y - p2[1])) / area
+
+            gama = 1 - alfa - beta
+
+            if alfa >= 0 and beta >= 0 and gama >= 0:
+                return alfa, beta, gama
+
+            return None
+
+        def criar_mipmaps(imagem):
+            niveis = [imagem]
+            atual = imagem
+
+            while atual.shape[0] > 1 or atual.shape[1] > 1:
+                altura, largura = atual.shape[:2]
+                nova_altura = max(1, altura // 2)
+                nova_largura = max(1, largura // 2)
+
+                proximo = np.zeros(
+                    (nova_altura, nova_largura, atual.shape[2]),
+                    dtype=np.uint8
+                )
+
+                for y in range(nova_altura):
+                    for x in range(nova_largura):
+                        bloco = atual[
+                            y * 2:min(y * 2 + 2, altura),
+                            x * 2:min(x * 2 + 2, largura)
+                        ]
+                        proximo[y, x] = bloco.mean(axis=(0, 1))
+
+                niveis.append(proximo)
+                atual = proximo
+
+            return niveis
+
+        def amostrar_textura(mipmaps, u, v, nivel):
+            imagem = mipmaps[min(nivel, len(mipmaps) - 1)]
+            altura, largura = imagem.shape[:2]
+
+            # repeatS/repeatT padrão do ImageTexture.
+            u = u % 1.0
+            v = 1.0 - (v % 1.0)
+
+            x = min(largura - 1, int(u * largura))
+            y = min(altura - 1, int(v * altura))
+
+            texel = imagem[y, x]
+            cor = texel[:3].tolist()
+
+            if len(texel) == 4:
+                alpha = texel[3] / 255
             else:
-                face_atual.append(idx)
-        if face_atual:
-            faces.append(face_atual)
+                alpha = 1.0
 
-        for face in faces:
+            return cor, alpha
+
+        imagem_textura = None
+        mipmaps = None
+
+        if current_texture:
+            imagem_textura = gpu.GPU.load_texture(current_texture[0])
+            imagem_textura = np.transpose(imagem_textura, (1, 0, 2))
+            mipmaps = criar_mipmaps(imagem_textura)
+
+        faces = separar_faces(coordIndex)
+        faces_cores = separar_faces(colorIndex) if colorIndex else []
+        faces_textura = separar_faces(texCoordIndex) if texCoordIndex else []
+
+        for indice_face, face in enumerate(faces):
             if len(face) < 3:
                 continue
 
-            v0 = face[0]
-            p0 = GL._transformar_ponto(*pontos3D[v0])
-
             for k in range(1, len(face) - 1):
-                v1 = face[k]
-                v2 = face[k + 1]
+                posicoes = [0, k, k + 1]
+                indices_vertices = [face[posicao] for posicao in posicoes]
 
-                p1 = GL._transformar_ponto(*pontos3D[v1])
-                p2 = GL._transformar_ponto(*pontos3D[v2])
+                p0 = projetar(coord[indices_vertices[0] * 3: indices_vertices[0] * 3 + 3])
+                p1 = projetar(coord[indices_vertices[1] * 3: indices_vertices[1] * 3 + 3])
+                p2 = projetar(coord[indices_vertices[2] * 3: indices_vertices[2] * 3 + 3])
 
-                if p0 is not None and p1 is not None and p2 is not None:
-                    GL._rasterizar_triangulo(p0, p1, p2, cor)
+                if p0 is None or p1 is None or p2 is None:
+                    continue
+
+                if color:
+                    if colorPerVertex:
+                        if indice_face < len(faces_cores):
+                            indices_cor = [
+                                faces_cores[indice_face][posicao]
+                                for posicao in posicoes
+                            ]
+                        else:
+                            indices_cor = indices_vertices
+
+                        cores_vertices = [
+                            [
+                                round(color[indice * 3] * 255),
+                                round(color[indice * 3 + 1] * 255),
+                                round(color[indice * 3 + 2] * 255)
+                            ]
+                            for indice in indices_cor
+                        ]
+                    else:
+                        indice_cor = (
+                            faces_cores[indice_face][0]
+                            if indice_face < len(faces_cores)
+                            else indice_face
+                        )
+
+                        cor_face = [
+                            round(color[indice_cor * 3] * 255),
+                            round(color[indice_cor * 3 + 1] * 255),
+                            round(color[indice_cor * 3 + 2] * 255)
+                        ]
+                        cores_vertices = [cor_face, cor_face, cor_face]
+                else:
+                    cores_vertices = [
+                        cor_material,
+                        cor_material,
+                        cor_material
+                    ]
+
+                uvs = None
+                nivel_mip = 0
+
+                if imagem_textura is not None and texCoord:
+                    if indice_face < len(faces_textura):
+                        indices_uv = [
+                            faces_textura[indice_face][posicao]
+                            for posicao in posicoes
+                        ]
+                    else:
+                        indices_uv = indices_vertices
+
+                    uvs = [
+                        [
+                            texCoord[indice * 2],
+                            texCoord[indice * 2 + 1]
+                        ]
+                        for indice in indices_uv
+                    ]
+
+                    tamanho_tela = max(
+                        math.dist(p0[:2], p1[:2]),
+                        math.dist(p1[:2], p2[:2]),
+                        math.dist(p2[:2], p0[:2]),
+                        1
+                    )
+
+                    largura_textura = imagem_textura.shape[1]
+                    altura_textura = imagem_textura.shape[0]
+
+                    tamanho_textura = max(
+                        math.dist([uvs[0][0] * largura_textura, uvs[0][1] * altura_textura], [uvs[1][0] * largura_textura, uvs[1][1] * altura_textura]),
+                        math.dist([uvs[1][0] * largura_textura,uvs[1][1] * altura_textura],[uvs[2][0] * largura_textura,uvs[2][1] * altura_textura]),
+                        math.dist([uvs[2][0] * largura_textura,uvs[2][1] * altura_textura],[uvs[0][0] * largura_textura,uvs[0][1] * altura_textura])
+                    )
+
+                    nivel_mip = max(0, int(math.log2(max(1, tamanho_textura / tamanho_tela))))
+
+                min_x = max(0, math.floor(min(p0[0], p1[0], p2[0])))
+                max_x = min(GL.width * escala - 1, math.ceil(max(p0[0], p1[0], p2[0])))
+                min_y = max(0, math.floor(min(p0[1], p1[1], p2[1])))
+                max_y = min(GL.height * escala - 1, math.ceil(max(p0[1], p1[1], p2[1])))
+
+                for y in range(min_y, max_y + 1):
+                    for x in range(min_x, max_x + 1):
+                        pesos = baricentricas(x + 0.5, y + 0.5, p0, p1, p2)
+
+                        if pesos is None:
+                            continue
+
+                        alfa, beta, gama = pesos
+
+                        z_camera = 1 / (alfa / p0[3] + beta / p1[3] + gama / p2[3])
+
+                        z_ndc = ((GL.far + GL.near) / (GL.far - GL.near) - (2 * GL.far * GL.near) /((GL.far - GL.near) * z_camera))
+                        z_normalizado = (z_ndc + 1) / 2
+
+                        z_atual = gpu.GPU.read_pixel([x, y], gpu.GPU.DEPTH_COMPONENT32F)[0]
+
+                        if z_normalizado >= z_atual:
+                            continue
+
+                        fator = (alfa / p0[3] + beta / p1[3] + gama / p2[3])
+
+                        w0 = (alfa / p0[3]) / fator
+                        w1 = (beta / p1[3]) / fator
+                        w2 = (gama / p2[3]) / fator
+
+                        cor_pixel = [round(w0 * cores_vertices[0][canal] + w1 * cores_vertices[1][canal] + w2 * cores_vertices[2][canal])
+                            for canal in range(3)
+                        ]
+
+                        alpha = 1 - transparencia
+
+                        if uvs is not None:
+                            u = w0 * uvs[0][0] + w1 * uvs[1][0] + w2 * uvs[2][0]
+                            v = w0 * uvs[0][1] + w1 * uvs[1][1] + w2 * uvs[2][1]
+
+                            cor_pixel, alpha_textura = amostrar_textura(
+                                mipmaps, u, v, nivel_mip
+                            )
+                            alpha *= alpha_textura
+
+                        if transparencia > 0 or alpha < 1:
+                            cor_anterior = gpu.GPU.read_pixel(
+                                [x, y],
+                                gpu.GPU.RGB8
+                            )
+
+                            cor_pixel = [
+                                round(
+                                    cor_pixel[canal] * alpha +
+                                    cor_anterior[canal] * (1 - alpha)
+                                )
+                                for canal in range(3)
+                            ]
+                        else:
+                            gpu.GPU.draw_pixel(
+                                [x, y],
+                                gpu.GPU.DEPTH_COMPONENT32F,
+                                [z_normalizado]
+                            )
+
+                        gpu.GPU.draw_pixel([x, y], gpu.GPU.RGB8, cor_pixel)
 
     @staticmethod
     def box(size, colors):
